@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Presentations and Papers Timetable (Multi-Attachment)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f9;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #2196F3;
+            color: white;
+            cursor: pointer;
+            user-select: none;
+        }
+        input[type="text"], input[type="date"], textarea {
+            width: 100%;
+            padding: 5px;
+            box-sizing: border-box;
+        }
+        textarea {
+            height: 60px;
+            resize: vertical;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #1976D2;
+        }
+        .input-row {
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .input-row label {
+            flex: 1;
+            min-width: 120px;
+        }
+        .edit-mode {
+            background-color: #e3f2fd;
+        }
+        .edit-input {
+            display: none;
+        }
+        .edit-mode .edit-input {
+            display: block;
+        }
+        .edit-mode .view-text {
+            display: none;
+        }
+        .error-message {
+            color: red;
+            margin-top: 10px;
+        }
+        .token-row {
+            margin-bottom: 10px;
+        }
+        .sort-indicator {
+            margin-left: 5px;
+            font-size: 0.9em;
+        }
+        .attachment-thumb {
+            max-height: 40px;
+            max-width: 60px;
+            vertical-align: middle;
+        }
+        .attachment-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+        .attachment-list li {
+            margin-bottom: 4px;
+        }
+        .remove-attachment-btn {
+            margin-left: 8px;
+            color: #f44336;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+        }
+    </style>
+</head>
+<body>
+    <h1>Presentations and Papers Timetable</h1>
+    <div class="token-row">
+        <label>GitHub Token: <input type="password" id="githubToken" placeholder="Enter GitHub PAT"></label>
+        <button onclick="saveToken()">Save Token</button>
+        <button onclick="clearToken()">Clear Token</button>
+    </div>
+    <div class="input-row">
+        <label>Date: <input type="date" id="newDate"></label>
+        <label>Type: <input type="text" id="newType" placeholder="e.g., Presentation or Paper"></label>
+        <label>Content: <input type="text" id="newContent" placeholder="e.g., SSW 502 Family Influence"></label>
+        <label>Notes: <textarea id="newNotes" placeholder="e.g., Prepare slides, APA citations"></textarea></label>
+        <label>Attachment(s): <input type="file" id="newFiles" multiple></label>
+        <button onclick="addAssignment()">Add Assignment</button>
+    </div>
+    <div id="errorMessage" class="error-message"></div>
+    <table id="timetable">
+        <thead>
+            <tr>
+                <th onclick="sortTable('completed')">Completed <span id="sort-completed" class="sort-indicator"></span></th>
+                <th onclick="sortTable('date')">Date <span id="sort-date" class="sort-indicator"></span></th>
+                <th onclick="sortTable('type')">Type <span id="sort-type" class="sort-indicator"></span></th>
+                <th onclick="sortTable('content')">Content <span id="sort-content" class="sort-indicator"></span></th>
+                <th onclick="sortTable('notes')">Notes <span id="sort-notes" class="sort-indicator"></span></th>
+                <th>Attachment(s)</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+    </table>
+    <button onclick="saveTimetable()">Save Timetable (Local)</button>
+    <button onclick="clearTimetable()">Clear Timetable</button>
+    <button onclick="syncToGitHub()">Sync with GitHub</button>
+    <button onclick="loadFromGitHub()">Reload from GitHub</button>
+
+    <script>
+        // ========== GitHub Sync Settings ==========
+        const GITHUB_USER = "lhwongn-bot";
+        const GITHUB_REPO = "nicktimetable";
+        const GITHUB_FILEPATH = "assignments.json";
+
+        // ========== Sorting Logic ==========
+        let sortState = {
+            column: "date",
+            ascending: true
+        };
+
+        function setSortIndicator() {
+            const columns = ["completed", "date", "type", "content", "notes"];
+            columns.forEach(col => {
+                const indicator = document.getElementById("sort-" + col);
+                if (!indicator) return;
+                if (sortState.column === col) {
+                    indicator.textContent = sortState.ascending ? "▲" : "▼";
+                } else {
+                    indicator.textContent = "";
+                }
+            });
+        }
+
+        function sortTable(column) {
+            if (sortState.column === column) {
+                sortState.ascending = !sortState.ascending;
+            } else {
+                sortState.column = column;
+                sortState.ascending = true;
+            }
+            setSortIndicator();
+            loadTimetable();
+        }
+
+        // ========== GitHub Token Handling ==========
+        function getToken() {
+            return localStorage.getItem("githubToken") || "";
+        }
+        function saveToken() {
+            const t = document.getElementById("githubToken").value.trim();
+            if (t) {
+                localStorage.setItem("githubToken", t);
+                alert("Token saved!");
+            } else {
+                alert("Please enter a token.");
+            }
+        }
+        function clearToken() {
+            localStorage.removeItem("githubToken");
+            document.getElementById("githubToken").value = "";
+            alert("Token cleared!");
+        }
+        document.getElementById("githubToken").value = getToken();
+
+        // ========== Timetable Logic ==========
+        function showError(message) {
+            const errorDiv = document.getElementById("errorMessage");
+            errorDiv.textContent = message;
+            setTimeout(() => errorDiv.textContent = "", 5000);
+        }
+
+        function sortAssignments(assignments) {
+            const col = sortState.column;
+            const asc = sortState.ascending ? 1 : -1;
+            return assignments.slice().sort((a, b) => {
+                let vA, vB;
+                switch (col) {
+                    case "date":
+                        vA = new Date(a.date);
+                        vB = new Date(b.date);
+                        return (vA - vB) * asc;
+                    case "completed":
+                        vA = !!a.completed;
+                        vB = !!b.completed;
+                        return (vA === vB ? 0 : vA ? 1 : -1) * asc;
+                    case "type":
+                    case "content":
+                    case "notes":
+                        vA = (a[col] || "").toLowerCase();
+                        vB = (b[col] || "").toLowerCase();
+                        return (vA > vB ? 1 : vA < vB ? -1 : 0) * asc;
+                    default:
+                        return 0;
+                }
+            });
+        }
+
+        function loadTimetable() {
+            try {
+                const savedData = localStorage.getItem("assignmentsTimetable");
+                const tableBody = document.getElementById("tableBody");
+                tableBody.innerHTML = "";
+                if (savedData) {
+                    let assignments = JSON.parse(savedData);
+                    assignments = sortAssignments(assignments);
+                    assignments.forEach(a => {
+                        addRowToTable(
+                            a.id, a.date, a.type, a.content, a.notes, a.completed,
+                            a.attachments || [] // Array of {name, data}
+                        );
+                    });
+                }
+                setSortIndicator();
+            } catch (e) {
+                console.error("Error loading timetable:", e);
+                showError("Failed to load timetable. Please try clearing the timetable.");
+            }
+        }
+
+        function renderAttachmentCell(attachments) {
+            if (!attachments || attachments.length === 0) return "";
+            let html = '<ul class="attachment-list">';
+            attachments.forEach(att => {
+                if (!att || !att.data) return;
+                let name = att.name || "attachment";
+                if (att.data.startsWith("data:image")) {
+                    html += `<li><a href="${att.data}" target="_blank"><img src="${att.data}" alt="Attachment" class="attachment-thumb"></a> ${name}</li>`;
+                } else if (att.data.startsWith("data:application/pdf")) {
+                    html += `<li><a href="${att.data}" target="_blank" download="${name}">PDF: ${name}</a></li>`;
+                } else {
+                    html += `<li><a href="${att.data}" download="${name}">${name}</a></li>`;
+                }
+            });
+            html += '</ul>';
+            return html;
+        }
+
+        function addRowToTable(id, date, type, content, notes, completed = false, attachments = []) {
+            const tableBody = document.getElementById("tableBody");
+            const row = document.createElement("tr");
+            row.setAttribute("data-id", id);
+            let attachmentCell = renderAttachmentCell(attachments);
+            row.innerHTML = `
+                <td><input type="checkbox" ${completed ? "checked" : ""} onchange="updateCompletion(${id}, this.checked)"></td>
+                <td>
+                    <span class="view-text">${date}</span>
+                    <input type="date" class="edit-input" value="${date}">
+                </td>
+                <td>
+                    <span class="view-text">${type}</span>
+                    <input type="text" class="edit-input" value="${type}">
+                </td>
+                <td>
+                    <span class="view-text">${content}</span>
+                    <input type="text" class="edit-input" value="${content}">
+                </td>
+                <td>
+                    <span class="view-text">${notes.replace(/\n/g, "<br>")}</span>
+                    <textarea class="edit-input">${notes}</textarea>
+                </td>
+                <td>
+                    <span class="view-text">${attachmentCell}</span>
+                    <div class="edit-input" style="min-width:160px;">
+                        <div id="edit-attachments-${id}"></div>
+                        <input type="file" multiple id="editFiles-${id}">
+                    </div>
+                </td>
+                <td>
+                    <button onclick="editRow(${id}, this)">Edit</button>
+                    <button class="edit-input" onclick="saveRow(${id}, this)">Save</button>
+                    <button onclick="deleteRow(${id})">Delete</button>
+                </td>
+            `;
+            tableBody.appendChild(row);
+        }
+
+        async function filesInputToAttachments(input) {
+            const files = input.files;
+            const result = [];
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const data = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(file);
+                });
+                result.push({ name: file.name, data });
+            }
+            return result;
+        }
+
+        async function addAssignment() {
+            const dateInput = document.getElementById("newDate").value;
+            const typeInput = document.getElementById("newType").value;
+            const contentInput = document.getElementById("newContent").value;
+            const notesInput = document.getElementById("newNotes").value;
+            const filesInput = document.getElementById("newFiles");
+
+            if (dateInput && typeInput && contentInput) {
+                try {
+                    const id = Date.now();
+                    const assignments = JSON.parse(localStorage.getItem("assignmentsTimetable") || "[]");
+                    let attachments = [];
+                    if (filesInput.files && filesInput.files.length > 0) {
+                        attachments = await filesInputToAttachments(filesInput);
+                    }
+                    assignments.push({
+                        id,
+                        date: dateInput,
+                        type: typeInput,
+                        content: contentInput,
+                        notes: notesInput,
+                        completed: false,
+                        attachments
+                    });
+                    localStorage.setItem("assignmentsTimetable", JSON.stringify(assignments));
+                    loadTimetable();
+                    document.getElementById("newDate").value = "";
+                    document.getElementById("newType").value = "";
+                    document.getElementById("newContent").value = "";
+                    document.getElementById("newNotes").value = "";
+                    filesInput.value = "";
+                    showError("");
+                    await syncToGitHub();
+                } catch (e) {
+                    console.error("Error adding assignment:", e);
+                    showError("Failed to add assignment. Please try again.");
+                }
+            } else {
+                showError("Please fill in Date, Type, and Content fields.");
+            }
+        }
+
+        function editRow(id, button) {
+            // Enter edit mode
+            const row = button.closest("tr");
+            row.classList.add("edit-mode");
+
+            // Render editable attachments list
+            const savedData = localStorage.getItem("assignmentsTimetable");
+            let assignments = savedData ? JSON.parse(savedData) : [];
+            const assignment = assignments.find(a => a.id === id);
+            const editDiv = document.getElementById(`edit-attachments-${id}`);
+            if (editDiv) {
+                editDiv.innerHTML = "";
+                if (assignment && assignment.attachments && assignment.attachments.length > 0) {
+                    assignment.attachments.forEach((att, i) => {
+                        const span = document.createElement("span");
+                        let name = att.name || "attachment";
+                        if (att.data.startsWith("data:image")) {
+                            span.innerHTML = `<a href="${att.data}" target="_blank"><img src="${att.data}" class="attachment-thumb" alt="Attachment"></a> ${name}`;
+                        } else if (att.data.startsWith("data:application/pdf")) {
+                            span.innerHTML = `<a href="${att.data}" target="_blank" download="${name}">PDF: ${name}</a>`;
+                        } else {
+                            span.innerHTML = `<a href="${att.data}" download="${name}">${name}</a>`;
+                        }
+                        // Remove button
+                        const btn = document.createElement("button");
+                        btn.textContent = "✕";
+                        btn.className = "remove-attachment-btn";
+                        btn.title = "Remove this attachment";
+                        btn.onclick = function() {
+                            removeEditAttachment(id, i);
+                        };
+                        span.appendChild(btn);
+                        editDiv.appendChild(span);
+                        editDiv.appendChild(document.createElement("br"));
+                    });
+                }
+            }
+        }
+
+        function removeEditAttachment(id, attIndex) {
+            // Remove attachment at attIndex for assignment id
+            const savedData = localStorage.getItem("assignmentsTimetable");
+            let assignments = savedData ? JSON.parse(savedData) : [];
+            assignments = assignments.map(a => {
+                if (a.id === id && a.attachments) {
+                    a.attachments.splice(attIndex, 1);
+                }
+                return a;
+            });
+            localStorage.setItem("assignmentsTimetable", JSON.stringify(assignments));
+            loadTimetable();
+            // Re-enter edit mode for this row
+            const editButton = document.querySelector(`tr[data-id="${id}"] button`);
+            if (editButton) editButton.click();
+        }
+
+        async function saveRow(id, button) {
+            const row = button.closest("tr");
+            const inputs = row.querySelectorAll(".edit-input");
+            const date = inputs[0].value;
+            const type = inputs[1].value;
+            const content = inputs[2].value;
+            const notes = inputs[3].value;
+            const filesInput = row.querySelector('input[type="file"]');
+
+            if (date && type && content) {
+                try {
+                    const savedData = localStorage.getItem("assignmentsTimetable");
+                    let assignments = savedData ? JSON.parse(savedData) : [];
+                    let newAttachments = [];
+                    if (filesInput && filesInput.files && filesInput.files.length > 0) {
+                        newAttachments = await filesInputToAttachments(filesInput);
+                    }
+                    assignments = assignments.map(a => {
+                        if (a.id === id) {
+                            let existingAttachments = Array.isArray(a.attachments) ? a.attachments : [];
+                            a = {
+                                ...a,
+                                date,
+                                type,
+                                content,
+                                notes,
+                                attachments: existingAttachments.concat(newAttachments)
+                            };
+                        }
+                        return a;
+                    });
+                    localStorage.setItem("assignmentsTimetable", JSON.stringify(assignments));
+                    row.classList.remove("edit-mode");
+                    loadTimetable();
+                    showError("");
+                    syncToGitHub();
+                } catch (e) {
+                    console.error("Error saving row:", e);
+                    showError("Failed to save changes. Please try again.");
+                }
+            } else {
+                showError("Please fill in Date, Type, and Content fields.");
+            }
+        }
+
+        function updateCompletion(id, isChecked) {
+            try {
+                const savedData = localStorage.getItem("assignmentsTimetable");
+                let assignments = savedData ? JSON.parse(savedData) : [];
+                assignments = assignments.map(a => {
+                    if (a.id === id) {
+                        a.completed = isChecked;
+                    }
+                    return a;
+                });
+                localStorage.setItem("assignmentsTimetable", JSON.stringify(assignments));
+                showError("");
+                syncToGitHub();
+                loadTimetable();
+            } catch (e) {
+                console.error("Error updating completion:", e);
+                showError("Failed to update completion status. Please try again.");
+            }
+        }
+
+        function deleteRow(id) {
+            if (confirm("Are you sure you want to delete this assignment?")) {
+                try {
+                    const savedData = localStorage.getItem("assignmentsTimetable");
+                    let assignments = savedData ? JSON.parse(savedData) : [];
+                    assignments = assignments.filter(a => a.id !== id);
+                    localStorage.setItem("assignmentsTimetable", JSON.stringify(assignments));
+                    loadTimetable();
+                    showError("");
+                    alert("Assignment deleted successfully!");
+                    syncToGitHub();
+                } catch (e) {
+                    console.error("Error deleting assignment:", e);
+                    showError("Failed to delete assignment. Please try again.");
+                }
+            }
+        }
+
+        function clearTimetable() {
+            if (confirm("Are you sure you want to clear the entire timetable?")) {
+                try {
+                    localStorage.removeItem("assignmentsTimetable");
+                    document.getElementById("tableBody").innerHTML = "";
+                    showError("");
+                    alert("Timetable cleared successfully!");
+                    syncToGitHub();
+                } catch (e) {
+                    console.error("Error clearing timetable:", e);
+                    showError("Failed to clear timetable. Please try again.");
+                }
+            }
+        }
+
+        function saveTimetable() {
+            try {
+                const savedData = localStorage.getItem("assignmentsTimetable");
+                if (savedData) {
+                    JSON.parse(savedData);
+                    alert("Timetable saved successfully!");
+                    showError("");
+                } else {
+                    alert("No assignments to save!");
+                }
+            } catch (e) {
+                console.error("Error saving timetable:", e);
+                showError("Failed to save timetable. Please try again.");
+            }
+        }
+
+        // ========== GitHub Sync Logic ==========
+
+        // Load assignments from GitHub (assignments.json)
+        async function loadFromGitHub() {
+            try {
+                showError("Loading from GitHub...");
+                const url = `https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main/${GITHUB_FILEPATH}`;
+                const resp = await fetch(url, { cache: "no-store" });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    localStorage.setItem("assignmentsTimetable", JSON.stringify(data));
+                    loadTimetable();
+                    showError("Loaded from GitHub!");
+                } else {
+                    showError("assignments.json not found in repo. Start by syncing your first timetable!");
+                }
+            } catch (e) {
+                console.error(e);
+                showError("Failed to load from GitHub.");
+            }
+        }
+
+        // Save assignments to GitHub (assignments.json)
+        async function syncToGitHub() {
+            const token = getToken();
+            if (!token) {
+                showError("GitHub token missing! Please enter and save it above.");
+                return;
+            }
+            const assignments = JSON.parse(localStorage.getItem("assignmentsTimetable") || "[]");
+            showError("Syncing to GitHub...");
+            try {
+                const url = `https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${GITHUB_FILEPATH}`;
+                // Get the SHA of the existing file (if any)
+                let sha = null;
+                const getResp = await fetch(url, { headers: { Authorization: `token ${token}` }});
+                if (getResp.ok) {
+                    const json = await getResp.json();
+                    sha = json.sha;
+                }
+                // Prepare put data
+                const putData = {
+                    message: "Update assignments.json",
+                    content: btoa(unescape(encodeURIComponent(JSON.stringify(assignments, null, 2)))),
+                };
+                if (sha) putData.sha = sha;
+                const putResp = await fetch(url, {
+                    method: "PUT",
+                    headers: {
+                        "Authorization": `token ${token}`,
+                        "Accept": "application/vnd.github.v3+json",
+                    },
+                    body: JSON.stringify(putData)
+                });
+                if (putResp.ok) {
+                    showError("Synced to GitHub!");
+                } else {
+                    const err = await putResp.json();
+                    showError("GitHub sync failed: " + (err.message || "Unknown error"));
+                }
+            } catch (e) {
+                console.error(e);
+                showError("Failed to sync to GitHub.");
+            }
+        }
+
+        // Load timetable from GitHub on first load (optional)
+        window.onload = async function() {
+            await loadFromGitHub();
+            loadTimetable();
+        };
+    </script>
+</body>
+</html>
